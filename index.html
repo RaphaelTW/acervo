@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Buscador Anarquismo — Frontend (com ranking, export e favoritos)</title>
+<style>
+  :root{--bg:#fff;--card:#f7f7f8;--text:#0b1220;--muted:#51606a;--accent:#0f766e;--glass: rgba(15,23,34,0.04);--good:#16a34a}
+  .dark{ --bg:#071428; --card:#07192a; --text:#e6eef6; --muted:#9aa9b4; --accent:#6ee7b7; --glass: rgba(255,255,255,0.02);--good:#34d399 }
+  *{box-sizing:border-box;font-family:Inter,system-ui,Segoe UI,Arial,Helvetica,sans-serif}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);min-height:100vh}
+  .wrap{max-width:1050px;margin:26px auto;padding:20px}
+  header{display:flex;gap:12px;align-items:center;justify-content:space-between}
+  h1{margin:0;font-size:18px}
+  .controls{display:flex;gap:10px;margin-top:18px}
+  input[type=text]{flex:1;padding:12px;border-radius:10px;border:1px solid var(--glass);background:transparent;color:var(--text)}
+  button, select{padding:10px 12px;border-radius:10px;border:0;background:var(--accent);color:var(--bg);font-weight:600}
+  .filters{display:flex;gap:10px;align-items:center;margin-left:6px}
+  .sources{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .chip{background:var(--card);padding:6px 10px;border-radius:999px;border:1px solid var(--glass);font-size:13px;color:var(--muted)}
+  .results{margin-top:18px;display:grid;gap:12px}
+  .result{display:flex;gap:12px;background:var(--card);padding:12px;border-radius:12px;align-items:flex-start}
+  .thumb{width:86px;height:110px;flex:0 0 86px;background:#ddd;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .meta{flex:1}
+  .meta h3{margin:0 0 6px;font-size:15px}
+  .meta p{margin:0;color:var(--muted);font-size:13px}
+  .actions{display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+  a.button{padding:8px 10px;border-radius:8px;background:transparent;border:1px solid var(--glass);text-decoration:none;color:var(--accent);font-weight:600}
+  .viewer{margin-top:14px;background:var(--card);padding:10px;border-radius:10px}
+  .small{font-size:13px;color:var(--muted)}
+  .topbar{display:flex;gap:8px;align-items:center}
+  .mode-toggle{cursor:pointer;padding:8px;border-radius:8px;border:1px solid var(--glass)}
+  .toolbar{display:flex;gap:8px;align-items:center}
+  .star{cursor:pointer;font-size:19px}
+  .fav-list{margin-top:12px}
+  .controls-row{display:flex;gap:8px;align-items:center}
+  @media(max-width:820px){ .result{flex-direction:column} .thumb{width:100%;height:160px} .actions{width:100%;flex-direction:row;justify-content:space-between} }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <header>
+    <div>
+      <h1>Buscador Anarquismo — Cliente Puro</h1>
+      <div class="small">Busca paralela (Wikimedia, Open Library, Internet Archive). Agora com ranking, deduplicação, export e favoritos locais.</div>
+    </div>
+    <div class="topbar">
+      <div class="mode-toggle" id="modeBtn" title="Alternar modo claro/escuro">🌙</div>
+    </div>
+  </header>
+
+  <div class="controls">
+    <input id="q" type="text" placeholder="Pesquisar: ex. 'anarchism', 'Bakunin', 'manual de organização'..." />
+    <button id="searchBtn">Buscar</button>
+    <div class="filters">
+      <label class="chip"><input id="pdfOnly" type="checkbox" /> PDFs</label>
+      <label class="chip"><input id="thumbnails" type="checkbox" checked /> Miniaturas</label>
+    </div>
+  </div>
+
+  <div class="controls-row" style="margin-top:10px">
+    <div class="sources">
+      <span class="chip">Wikimedia</span>
+      <span class="chip">Internet Archive</span>
+      <span class="chip">Open Library</span>
+    </div>
+
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <button id="exportCsv">Exportar CSV</button>
+      <button id="exportJson">Exportar JSON</button>
+      <button id="showFavs">Favoritos</button>
+    </div>
+  </div>
+
+  <div id="status" class="small" style="margin-top:12px;color:#8b8b8b"></div>
+
+  <section id="results" class="results"></section>
+
+  <div id="viewerArea"></div>
+
+  <div id="favPanel" style="display:none;margin-top:12px">
+    <h3>Favoritos</h3>
+    <div id="favList" class="fav-list small"></div>
+    <div style="margin-top:8px"><button id="closeFavs">Fechar</button></div>
+  </div>
+
+  <div style="margin-top:18px;color:var(--muted);font-size:13px">
+    Nota: se alguma fonte bloquear requisições por CORS, o buscador oferece abrir a pesquisa diretamente no site (nova aba). Este cliente não acessa a "deep web" (.onion).
+  </div>
+</div>
+
+<script>
+/* ==================================================================================
+   Front-end search client with:
+   - Parallel searches (Wikimedia, Open Library, Internet Archive)
+   - Deduplication & merging
+   - Simple client-side ranking/scoring
+   - Export CSV/JSON
+   - Favorites stored in localStorage
+   - No backend required (CORS fallbacks provided)
+   ==================================================================================*/
+
+// Elements
+const qEl = document.getElementById('q');
+const btn = document.getElementById('searchBtn');
+const resultsEl = document.getElementById('results');
+const statusEl = document.getElementById('status');
+const viewer = document.getElementById('viewerArea');
+const pdfOnlyEl = document.getElementById('pdfOnly');
+const thumbsEl = document.getElementById('thumbnails');
+const modeBtn = document.getElementById('modeBtn');
+const exportCsvBtn = document.getElementById('exportCsv');
+const exportJsonBtn = document.getElementById('exportJson');
+const showFavsBtn = document.getElementById('showFavs');
+const favPanel = document.getElementById('favPanel');
+const favListEl = document.getElementById('favList');
+const closeFavs = document.getElementById('closeFavs');
+
+let isDark = true;
+const STORAGE_FAVS = 'anarch_search_favs_v1';
+
+// initial theme
+document.body.classList.add('dark');
+modeBtn.addEventListener('click', ()=>{ isDark = !isDark; document.body.classList.toggle('dark', isDark); modeBtn.textContent = isDark ? '🌙' : '☀️'; });
+
+// helpers
+function setStatus(t){ statusEl.textContent = t || '' }
+function escapeHtml(s){ return String(s||'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]) }
+function safeText(s){ return String(s||'').replace(/\s+/g,' ').trim() }
+
+function mkThumb(url, srcName){
+  if(!thumbsEl.checked) return `<div class="thumb"><div style="padding:8px;color:var(--muted);font-size:13px">${escapeHtml(srcName||'sem imagem')}</div></div>`;
+  return `<div class="thumb">${url?`<img src="${url}" style="width:100%;height:100%;object-fit:cover" alt="capa">`:`<div style="padding:8px;color:var(--muted);font-size:13px">${escapeHtml(srcName||'sem imagem')}</div>`}</div>`;
+}
+
+/* ==========================
+   Sources: Wikimedia, Open Library, Internet Archive
+   Each returns array of items with fields:
+   { id, title, excerpt, url, thumb, source, type, date }
+   ==========================*/
+
+async function searchWikimedia(q, limit=6){
+  const endpoints = [
+    {name:'Wikipedia (en)', api:'https://en.wikipedia.org/w/api.php'},
+    {name:'Wikisource (en)', api:'https://en.wikisource.org/w/api.php'}
+  ];
+  const out=[];
+  for(const ep of endpoints){
+    const url = `${ep.api}?action=query&list=search&srsearch=${encodeURIComponent(q)}&srlimit=${limit}&format=json&origin=*`;
+    try{
+      const res = await fetch(url);
+      if(!res.ok) throw new Error(res.status);
+      const json = await res.json();
+      (json.query?.search||[]).forEach(s=>{
+        const title = s.title;
+        out.push({ id: `wiki:${ep.name}:${title}`, title, excerpt: (s.snippet||'').replace(/<[^>]+>/g,''), url: `https://${ep.api.includes('wikipedia')? 'en.wikipedia.org/wiki' : 'en.wikisource.org/wiki'}/${encodeURIComponent(title)}`, thumb:null, source:ep.name, type:'html' });
+      });
+    }catch(err){
+      out.push({ id:`wiki_fallback:${ep.name}`, title:`Abrir pesquisa em ${ep.name}`, excerpt:`Erro (CORS ou rede): ${err.message}`, url:`https://en.wikipedia.org/w/index.php?search=${encodeURIComponent(q)}`, thumb:null, source:ep.name, type:'html' });
+    }
+  }
+  return out;
+}
+
+async function searchOpenLibrary(q, limit=6){
+  const url = `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=${limit}`;
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(res.status);
+    const json = await res.json();
+    return (json.docs||[]).map(d=>{
+      const cover = d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null;
+      const title = d.title || d.title_suggest || 'Sem título';
+      const authors = (d.author_name||[]).join(', ');
+      const link = d.key ? `https://openlibrary.org${d.key}` : `https://openlibrary.org/search?q=${encodeURIComponent(title)}`;
+      return { id:`ol:${d.key||title}`, title, excerpt: authors ? `Autor(es): ${authors}` : `Ano: ${d.first_publish_year||'?'}`, url:link, thumb:cover, source:'Open Library', type:'html', date: d.first_publish_year };
+    });
+  }catch(err){
+    return [{ id:'ol_fallback', title:'Abrir pesquisa no Open Library', excerpt:`Erro (CORS ou rede): ${err.message}`, url:`https://openlibrary.org/search?q=${encodeURIComponent(q)}`, thumb:null, source:'Open Library', type:'html' }];
+  }
+}
+
+async function searchInternetArchive(q, limit=8){
+  const qParam = encodeURIComponent(q);
+  const fl = ['identifier','title','creator','description','mediatype','publicdate'].map(f=>`fl[]=${encodeURIComponent(f)}`).join('&');
+  const url = `https://archive.org/advancedsearch.php?q=${qParam}&${fl}&rows=${limit}&output=json`;
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error(res.status);
+    const json = await res.json();
+    const docs = json.response?.docs || [];
+    return docs.map(d=>{
+      const id = d.identifier;
+      const title = d.title || id;
+      const description = d.description || d.creator || '';
+      const mediatype = d.mediatype || '';
+      const urlItem = id ? `https://archive.org/details/${encodeURIComponent(id)}` : `https://archive.org/search.php?query=${qParam}`;
+      const thumb = id ? `https://archive.org/services/img/${encodeURIComponent(id)}` : null;
+      return { id:`ia:${id}`, title, excerpt: description, url: urlItem, thumb, source:'Internet Archive', type: mediatype && /text|pdf|texts/.test(mediatype) ? 'pdf' : 'html', date: d.publicdate };
+    });
+  }catch(err){
+    return [{ id:'ia_fallback', title:'Abrir pesquisa no Internet Archive', excerpt:`Erro (CORS ou rede): ${err.message}`, url:`https://archive.org/search.php?query=${encodeURIComponent(q)}`, thumb:null, source:'Internet Archive', type:'html' }];
+  }
+}
+
+/* =========================
+   Deduplicate & Merge similar items
+   - normalize title (lowercase, remove punctuation)
+   - if normalized title equal or one contains the other, merge
+   - keep best thumb/url and merge sources
+   =========================*/
+
+function normalizeTitle(t){ return safeText(String(t||'').toLowerCase().replace(/[\W_]+/g,' ')); }
+
+function mergeResults(arr){
+  const map = new Map();
+  for(const it of arr){
+    const key = it.url ? it.url.toLowerCase() : normalizeTitle(it.title);
+    // prefer unique urls; but also try to merge by normalized title
+    if(map.has(key)){
+      const existing = map.get(key);
+      existing.sources = Array.from(new Set([...(existing.sources||[]), it.source]));
+      existing.excerpt = existing.excerpt || it.excerpt;
+      existing.thumb = existing.thumb || it.thumb;
+      existing.type = existing.type || it.type;
+      existing.urls = Array.from(new Set([...(existing.urls||[]), it.url]));
+      continue;
+    }
+    // try to find similar normalized title
+    const n = normalizeTitle(it.title || it.id);
+    let found = null;
+    for(const [k,v] of map.entries()){
+      const vn = normalizeTitle(v.title||'');
+      if(!vn) continue;
+      if(vn === n || vn.includes(n) || n.includes(vn)) { found = k; break; }
+      // word overlap heuristic
+      const a = new Set(vn.split(' ').filter(Boolean));
+      const b = new Set(n.split(' ').filter(Boolean));
+      const inter = [...a].filter(x=>b.has(x)).length;
+      if(inter >= Math.min(2, Math.max(a.size,b.size))) { found = k; break; }
+    }
+    if(found){
+      const existing = map.get(found);
+      existing.sources = Array.from(new Set([...(existing.sources||[]), it.source]));
+      existing.excerpt = existing.excerpt || it.excerpt;
+      existing.thumb = existing.thumb || it.thumb;
+      existing.type = existing.type || it.type;
+      existing.urls = Array.from(new Set([...(existing.urls||[]), it.url]));
+    } else {
+      map.set(key, Object.assign({}, it, { sources: [it.source], urls: [it.url] }));
+    }
+  }
+  return Array.from(map.values());
+}
+
+/* =========================
+   Scoring / ranking
+   - title match (phrase) + exact words
+   - excerpt matches
+   - source boost
+   - recency if date
+   =========================*/
+
+function scoreItem(item, query){
+  const q = normalizeTitle(query);
+  let score = 0;
+  const title = normalizeTitle(item.title||'');
+  const excerpt = normalizeTitle(item.excerpt||'');
+  // exact phrase in title
+  if(title.includes(q) && q.length>2) score += 30;
+  // word matches in title
+  const qWords = q.split(' ').filter(Boolean);
+  for(const w of qWords){ if(title.includes(w)) score += 6; if(excerpt.includes(w)) score += 2 }
+  // length friendly: longer excerpt gives slight boost
+  if((item.excerpt||'').length > 120) score += 3;
+  // source boost
+  if((item.sources||[]).includes('Internet Archive')) score += 10;
+  if((item.sources||[]).includes('Open Library')) score += 6;
+  if((item.sources||[]).some(s=>s.toLowerCase().includes('wik'))) score += 4;
+  // date recency (if date exists and parseable year)
+  if(item.date){
+    const y = parseInt((String(item.date||'')).slice(0,4));
+    if(!isNaN(y)){
+      const age = new Date().getFullYear() - y;
+      if(age <= 1) score += 12; else if(age <=5) score += 6; else if(age<=20) score += 2;
+    }
+  }
+  // small random tie-breaker
+  score += Math.random()*0.5;
+  return score;
+}
+
+/* =========================
+   Render
+   =========================*/
+
+function clearResults(){ resultsEl.innerHTML=''; viewer.innerHTML=''; }
+
+function renderItems(items, query){
+  clearResults();
+  if(!items.length) { resultsEl.innerHTML = `<div class="small">Nenhum resultado.</div>`; return; }
+  items.forEach(it=>{
+    const r = document.createElement('article'); r.className='result';
+    const thumbHtml = mkThumb(it.thumb, it.sources ? it.sources.join(',') : it.source);
+    const excerpt = it.excerpt ? it.excerpt : '';
+    const primaryUrl = (it.urls && it.urls[0]) || it.url || '#';
+    // favorite state
+    const favs = loadFavs();
+    const isFav = favs.some(f=>f.url === primaryUrl);
+    r.innerHTML = `
+      ${thumbHtml}
+      <div class="meta">
+        <h3>${escapeHtml(it.title || 'Sem título')}</h3>
+        <p class="small">${escapeHtml(excerpt)}</p>
+        <div style="margin-top:8px" class="small">Fonte(s): ${escapeHtml((it.sources||[it.source||'']).join(', '))}</div>
+      </div>
+      <div class="actions">
+        <a class="button" href="${primaryUrl}" target="_blank" rel="noopener">Abrir</a>
+        ${it.type==='pdf' ? `<a class="button" data-url="${primaryUrl}" href="#" onclick="openEmbed(event)">Embed</a>` : ''}
+        <div style="display:flex;gap:6px;align-items:center">
+          <div class="star" title="Favoritar" data-url="${primaryUrl}" onclick="toggleFav(event)">${isFav? '★' : '☆'}</div>
+          <div style="font-size:12px;color:var(--muted)">Score: ${Math.round(it._score||0)}</div>
+        </div>
+      </div>
+    `;
+    resultsEl.appendChild(r);
+  });
+}
+
+window.openEmbed = function(e){ e.preventDefault(); const url = e.currentTarget.dataset.url; viewer.innerHTML = `<div class="viewer"><div style="font-size:14px;margin-bottom:6px">Visualizador</div><iframe src="${url}" style="width:100%;height:640px;border:0;border-radius:8px"></iframe></div>`; }
+
+window.toggleFav = function(e){
+  const url = e.currentTarget.dataset.url;
+  const card = e.currentTarget;
+  const el = card;
+  // find item info from displayed results
+  const parent = card.closest('.result');
+  const title = parent.querySelector('.meta h3').textContent;
+  const excerpt = parent.querySelector('.meta .small')?.textContent || '';
+  const sourceText = parent.querySelector('.meta div.small')?.textContent || '';
+  const favs = loadFavs();
+  const idx = favs.findIndex(f=>f.url===url);
+  if(idx>=0){ favs.splice(idx,1); card.textContent='☆'; }
+  else { favs.push({title,excerpt,url,source:sourceText}); card.textContent='★'; }
+  saveFavs(favs);
+}
+
+function loadFavs(){ try{ return JSON.parse(localStorage.getItem(STORAGE_FAVS) || '[]'); }catch(e){ return []; } }
+function saveFavs(arr){ localStorage.setItem(STORAGE_FAVS, JSON.stringify(arr)); }
+
+showFavsBtn.addEventListener('click', ()=>{ renderFavs(); favPanel.style.display='block'; });
+closeFavs.addEventListener('click', ()=>{ favPanel.style.display='none'; });
+
+function renderFavs(){ const favs = loadFavs(); if(!favs.length){ favListEl.innerHTML = '<div class="small">Sem favoritos salvos.</div>'; return; } favListEl.innerHTML = ''; favs.forEach(f=>{ const d = document.createElement('div'); d.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:6px;background:var(--card);margin-bottom:6px"><div><div style="font-weight:600">${escapeHtml(f.title)}</div><div class="small">${escapeHtml(f.source||'')}</div></div><div style="display:flex;gap:6px"><a class="button" href="${f.url}" target="_blank">Abrir</a><button class="button" data-url="${f.url}">Remover</button></div></div>`; favListEl.appendChild(d); d.querySelector('button')?.addEventListener('click', ()=>{ removeFav(f.url); renderFavs(); }); }); }
+
+function removeFav(url){ const favs = loadFavs().filter(f=>f.url!==url); saveFavs(favs); }
+
+/* =========================
+   Exports
+   =========================*/
+
+function exportCSV(items){
+  const headers = ['title','excerpt','url','sources','type'];
+  const rows = items.map(it => [it.title, it.excerpt, (it.urls && it.urls.join(' | ')) || it.url, (it.sources||[]).join(','), it.type || '']);
+  const csv = [headers.join(','), ...rows.map(r=> r.map(cell=>`"${String(cell||'').replace(/"/g,'""') }"`).join(','))].join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'resultados.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
+function exportJSON(items){
+  const blob = new Blob([JSON.stringify(items, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'resultados.json'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
+exportCsvBtn.addEventListener('click', ()=>{ const items = window._LAST_RESULTS || []; if(!items.length){ alert('Sem resultados para exportar.'); return; } exportCSV(items); });
+exportJsonBtn.addEventListener('click', ()=>{ const items = window._LAST_RESULTS || []; if(!items.length){ alert('Sem resultados para exportar.'); return; } exportJSON(items); });
+
+/* =========================
+   Orquestra busca
+   =========================*/
+
+async function doSearch(){
+  const q = safeText(qEl.value);
+  if(!q){ setStatus('Digite termos para buscar.'); return; }
+  setStatus('Buscando em múltiplas fontes...');
+  clearResults();
+  try{
+    const promises = [ searchWikimedia(q,6), searchOpenLibrary(q,6), searchInternetArchive(q,8) ];
+    const res = await Promise.all(promises);
+    let all = res.flat().filter(Boolean);
+    // dedupe/merge
+    const merged = mergeResults(all);
+    // scoring
+    merged.forEach(it=>{ it._score = scoreItem(it, q); });
+    // sort by score desc
+    merged.sort((a,b)=> (b._score||0) - (a._score||0));
+    // save last results
+    window._LAST_RESULTS = merged;
+    // apply pdfOnly filter
+    const pdfOnly = pdfOnlyEl.checked;
+    const filtered = pdfOnly ? merged.filter(i => (i.type||'').toLowerCase().includes('pdf') || (i.urls||[]).some(u=>u.toLowerCase().endsWith('.pdf'))) : merged;
+    setStatus(`Resultados: ${filtered.length} (após merge e ranking).`);
+    renderItems(filtered, q);
+  }catch(err){ setStatus('Erro durante a busca: '+err.message); }
+}
+
+btn.addEventListener('click', doSearch);
+qEl.addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
+
+// sample
+qEl.value = 'anarchism';
+doSearch();
+
+</script>
+</body>
+</html>
